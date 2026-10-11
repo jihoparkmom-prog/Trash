@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 자동 쓰레기통 제어 시스템</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 30px; }
+        #webcam-container { margin: 20px auto; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 5px; }
+        #label-container { font-size: 18px; font-weight: bold; margin-top: 15px; }
+    </style>
+</head>
+<body>
+
+    <h2>🤖 AI 자동 쓰레기통 시스템</h2>
+    
+    <!-- 컨트롤 버튼 영역 -->
+    <div>
+        <button type="button" onclick="connectArduino()">1. 아두이노 연결하기</button>
+        <button type="button" onclick="init()">2. 카메라 & AI 시작</button>
+    </div>
+
+    <!-- 웹캠 및 인식 결과 출력 영역 -->
+    <div id="webcam-container"></div>
+    <div id="label-container">대기 중...</div>
+
+    <!-- TensorFlow.js 및 Teachable Machine 라이브러리 -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+    <script type="text/javascript">
+        // ⚠️ 본인의 티처블 머신 모델 폴더 경로로 수정하세요 (예: "./my_model/")
+        const URL = "./my_model/";
+
+        let model, webcam, labelContainer, maxPredictions;
+        let port, writer;
+        let lastSentTime = 0; // 중복 전송 방지용 딜레이 변수
+
+        // 1. 아두이노 시리얼 포트 연결 함수
+        async function connectArduino() {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 9600 });
+                writer = port.writable.getWriter();
+                alert("아두이노 연결 성공!");
+            } catch (error) {
+                alert("아두이노 연결 실패 (시리얼 모니터가 켜져 있는지 확인하세요): " + error);
+            }
+        }
+
+        // 2. 카메라 및 티처블 머신 모델 초기화 함수
+        async function init() {
+            try {
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                const flip = true; 
+                webcam = new tmImage.Webcam(300, 300, flip); 
+                await webcam.setup(); 
+                await webcam.play();
+                window.requestAnimationFrame(loop);
+
+                // 화면에 웹캠 비디오 추가
+                document.getElementById("webcam-container").innerHTML = "";
+                document.getElementById("webcam-container").appendChild(webcam.canvas);
+                
+                labelContainer = document.getElementById("label-container");
+                labelContainer.innerHTML = "";
+                for (let i = 0; i < maxPredictions; i++) {
+                    labelContainer.appendChild(document.createElement("div"));
+                }
+                console.log("카메라 시작 완료!");
+            } catch (error) {
+                alert("카메라 시작 실패 (다른 곳에서 사용 중인지 확인하세요): " + error);
+            }
+        }
+
+        async function loop() {
+            webcam.update(); 
+            await predict();
+            window.requestAnimationFrame(loop);
+        }
+
+        // 3. AI 예측 및 아두이노 신호 전송 로직
+        async function predict() {
+            const prediction = await model.predict(webcam.canvas);
+            
+            for (let i = 0; i < maxPredictions; i++) {
+                const classPrediction =
+                    prediction[i].className + ": " + (prediction[i].probability * 100).toFixed(1) + "%";
+                
+                // 화면에 인식 결과 표시
+                if (labelContainer.childNodes[i]) {
+                    labelContainer.childNodes[i].innerHTML = classPrediction;
+                }
+
+                // 인식 확률이 85%(0.85) 이상이고, 아두이노가 연결되어 있으며, 5초 쿨타임이 지난 경우
+                if (prediction[i].probability > 0.85 && writer) {
+                    let currentTime = Date.now();
+                    if (currentTime - lastSentTime > 5000) { // 5초 쿨타임
+                        let className = prediction[i].className.trim().toUpperCase(); 
+                        
+                        // 아두이노가 인식하는 명령어와 일치하는 경우에만 전송
+                        if (["PAPER", "PLASTIC", "CAN", "TRASH"].includes(className)) {
+                            sendToArduino(className);
+                            lastSentTime = currentTime;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 아두이노로 문자열 전송하는 함수
+        async function sendToArduino(data) {
+            const encoder = new TextEncoder();
+            const command = data + "\n"; 
+            await writer.write(encoder.encode(command));
+            console.log("아두이노로 전송된 신호: " + data);
+        }
+    </script>
+</body>
+</html>
+
+
